@@ -5,6 +5,8 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser
 from rest_framework import status
+from django.http import HttpResponse
+import pandas as pd
 
 class ReconciliationView(APIView):
     parser_classes = [MultiPartParser]
@@ -23,7 +25,15 @@ class ReconciliationView(APIView):
             return Response({'error': f'CSV parsing error: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
 
         report = self.reconcile(source_data, target_data)
+        # return Response(report, status=status.HTTP_200_OK)
+    
+    # At the end of the function, replace return with:
+        response_format = request.query_params.get('format', 'json')
+
+        if response_format == 'csv':
+            return self.generate_csv_response(report)
         return Response(report, status=status.HTTP_200_OK)
+
 
     def parse_csv(self, file):
         decoded = file.read().decode('utf-8-sig')
@@ -57,3 +67,27 @@ class ReconciliationView(APIView):
             'missing_in_source': missing_in_source,
             'discrepancies': discrepancies
         }
+
+
+    def generate_csv_response(self, report):
+        output = io.StringIO()
+        all_rows = []
+
+        for group, records in report.items():
+            for record in records:
+                if isinstance(record, dict):
+                    if 'differences' in record:
+                        row = {'id': record['id']}
+                        row.update({f"{k}_source": v['source'] for k, v in record['differences'].items()})
+                        row.update({f"{k}_target": v['target'] for k, v in record['differences'].items()})
+                        row['type'] = 'discrepancy'
+                        all_rows.append(row)
+                    else:
+                        record['type'] = group
+                        all_rows.append(record)
+
+        df = pd.DataFrame(all_rows)
+        df.to_csv(output, index=False)
+        response = HttpResponse(output.getvalue(), content_type='text/csv')
+        response['Content-Disposition'] = 'attachment; filename=reconciliation_report.csv'
+        return response
